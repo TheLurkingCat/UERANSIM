@@ -129,7 +129,7 @@ eap::EapAkaPrime::EapAkaPrime(eap::ECode code, octet id, eap::ESubType subType)
 {
 }
 
-eap::EapTLS::EapTLS(eap::ECode code, octet id, uint16_t flag, OctetString &&tlsData)
+eap::EapTLS::EapTLS(eap::ECode code, octet id, uint8_t flag, OctetString &&tlsData)
     : Eap(code, id, EEapType::EAP_TLS), flag(flag), tlsData(std::move(tlsData))
 {
 }
@@ -183,7 +183,7 @@ void eap::EncodeEapPdu(OctetString &stream, const eap::Eap &pdu)
         else if (pdu.eapType == EEapType::EAP_TLS)
         {
             auto &tls = (const EapTLS &)pdu;
-            stream.appendOctet2(128);
+            stream.appendOctet(tls.flag);
             stream.appendOctet4(tls.tlsData.length());
             stream.append(tls.tlsData);
         }
@@ -255,7 +255,7 @@ std::unique_ptr<eap::Eap> eap::DecodeEapPdu(const OctetView &stream)
     }
     else if (type == EEapType::EAP_TLS)
     {
-        uint16_t flag = stream.read2US();
+        uint8_t flag = stream.read();
         int tlsDataLength = stream.read4I();
         auto tlsData = stream.readOctetString(tlsDataLength);
 

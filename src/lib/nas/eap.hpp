@@ -181,10 +181,10 @@ class EapAkaPrime : public Eap
 class EapTLS : public Eap
 {
   public:
-    uint16_t flag;
+    uint8_t flag;
     OctetString tlsData{};
 
-    EapTLS(ECode code, octet id, uint16_t flag, OctetString &&data);
+    EapTLS(ECode code, octet id, uint8_t flag, OctetString &&data);
 };
 
 class EapIdentity : public Eap

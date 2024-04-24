@@ -163,13 +163,13 @@ static nr::ue::UeConfig *ReadConfigYaml()
     if (yaml::HasField(config, "tunName"))
         result->tunName = yaml::GetString(config, "tunName", 1, 12);
     if (yaml::HasField(config, "caCertificate"))
-        result->caCertificate = yaml::GetString(config, "caCertificate", 0, 64);
+        result->caCertificate = yaml::GetString(config, "caCertificate");
     if (yaml::HasField(config, "clientCertificate"))
-        result->clientCertificate = yaml::GetString(config, "clientCertificate", 0, 64);
+        result->clientCertificate = yaml::GetString(config, "clientCertificate");
     if (yaml::HasField(config, "clientPrivateKey"))
-        result->clientPrivateKey = yaml::GetString(config, "clientPrivateKey", 0, 64);
+        result->clientPrivateKey = yaml::GetString(config, "clientPrivateKey");
     if (yaml::HasField(config, "clientPassword"))
-        result->clientPassword = yaml::GetString(config, "clientPassword", 0, 64);
+        result->clientPassword = yaml::GetString(config, "clientPassword");
 
     yaml::AssertHasField(config, "integrity");
     yaml::AssertHasField(config, "ciphering");
@@ -379,6 +379,10 @@ static nr::ue::UeConfig *GetConfigByUe(int ueIndex)
     c->integrityMaxRate = g_refConfig->integrityMaxRate;
     c->uacAic = g_refConfig->uacAic;
     c->uacAcc = g_refConfig->uacAcc;
+    c->caCertificate = g_refConfig->caCertificate;
+    c->clientCertificate = g_refConfig->clientCertificate;
+    c->clientPrivateKey = g_refConfig->clientPrivateKey;
+    c->clientPassword = g_refConfig->clientPassword;
 
     if (c->supi.has_value())
         IncrementNumber(c->supi->value, ueIndex);

@@ -350,7 +350,7 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
 
             auto ui = makeMethod();
             auto storeHandle = OSSL_STORE_open(m_base->config->clientPrivateKey.c_str(), ui,
-                                               (void *)(m_base->config->clientPassword.c_str()), nullptr, nullptr);
+                                               (void *)(&m_base->config->clientPassword), nullptr, nullptr);
             auto storeInfo = OSSL_STORE_load(storeHandle);
             m_pkey = OSSL_STORE_INFO_get1_PKEY(storeInfo);
             SSL_CTX_use_PrivateKey(m_ctx, m_pkey);
