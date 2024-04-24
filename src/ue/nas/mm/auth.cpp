@@ -7,9 +7,61 @@
 //
 
 #include "mm.hpp"
+#include <openssl/ssl.h>
+#include <openssl/store.h>
+#include <openssl/ui.h>
 
 #include <lib/nas/utils.hpp>
 #include <ue/nas/keys.hpp>
+
+namespace
+{
+
+int uiReader(UI *ui, UI_STRING *uis)
+{
+    std::string *password;
+    switch (UI_get_string_type(uis))
+    {
+    case UIT_PROMPT:
+    case UIT_VERIFY:
+        password = reinterpret_cast<std::string *>(UI_get0_user_data(ui));
+        if (password && (UI_get_input_flags(uis) & UI_INPUT_FLAG_DEFAULT_PWD))
+        {
+            UI_set_result(ui, uis, password->c_str());
+            return 1;
+        }
+    default:
+        break;
+    }
+    return (UI_method_get_reader(UI_OpenSSL()))(ui, uis);
+}
+
+int uiWriter(UI *ui, UI_STRING *uis)
+{
+    switch (UI_get_string_type(uis))
+    {
+    case UIT_PROMPT:
+    case UIT_VERIFY:
+        if (UI_get0_user_data(ui) && (UI_get_input_flags(uis) & UI_INPUT_FLAG_DEFAULT_PWD))
+        {
+            return 1;
+        }
+    default:
+        break;
+    }
+    return (UI_method_get_writer(UI_OpenSSL()))(ui, uis);
+}
+
+UI_METHOD *makeMethod()
+{
+    UI_METHOD *method = UI_create_method("TPM User Interface");
+    UI_method_set_opener(method, UI_method_get_opener(UI_OpenSSL()));
+    UI_method_set_closer(method, UI_method_get_closer(UI_OpenSSL()));
+    UI_method_set_reader(method, uiReader);
+    UI_method_set_writer(method, uiWriter);
+    return method;
+}
+} // namespace
 
 namespace nr::ue
 {
@@ -76,106 +128,171 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
         return;
     }
 
-    if (msg.eapMessage->eap->eapType != eap::EEapType::EAP_AKA_PRIME)
+    if (msg.eapMessage->eap->eapType == eap::EEapType::EAP_AKA_PRIME)
     {
-        sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
-        return;
-    }
-
-    auto &receivedEap = (const eap::EapAkaPrime &)*msg.eapMessage->eap;
-
-    if (receivedEap.subType != eap::ESubType::AKA_CHALLENGE)
-    {
-        sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
-        return;
-    }
-
-    // ================================ Check the received parameters syntactically ================================
-
-    auto receivedRand = receivedEap.attributes.getRand();
-    auto receivedMac = receivedEap.attributes.getMac();
-    auto receivedAutn = receivedEap.attributes.getAutn();
-
-    if (receivedRand.length() != 16 || receivedAutn.length() != 16 || receivedMac.length() != 16)
-    {
-        sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
-        return;
-    }
-
-    // =================================== Check the received KDF and KDF_INPUT ===================================
-
-    if (receivedEap.attributes.getKdf() != 1)
-    {
-        m_logger->err("EAP AKA' Authentication Reject, received AT_KDF is not valid");
-        if (networkFailingTheAuthCheck(true))
-            return;
-        m_timers->t3520.start();
-        sendEapFailure(std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
-                                                          eap::ESubType::AKA_AUTHENTICATION_REJECT));
-        return;
-    }
-
-    auto snn = keys::ConstructServingNetworkName(currentPlmn);
-
-    if (receivedEap.attributes.getKdfInput() != OctetString::FromAscii(snn))
-    {
-        m_logger->err("EAP AKA' Authentication Reject, received AT_KDF_INPUT is not valid");
-
-        sendEapFailure(std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
-                                                          eap::ESubType::AKA_AUTHENTICATION_REJECT));
-        return;
-    }
-
-    // =================================== Check the received ngKSI ===================================
-
-    if (msg.ngKSI.tsc == nas::ETypeOfSecurityContext::MAPPED_SECURITY_CONTEXT)
-    {
-        m_logger->err("Mapped security context not supported");
-        sendAuthFailure(nas::EMmCause::UNSPECIFIED_PROTOCOL_ERROR);
-        return;
-    }
-
-    if (msg.ngKSI.ksi == nas::IENasKeySetIdentifier::NOT_AVAILABLE_OR_RESERVED)
-    {
-        m_logger->err("Invalid ngKSI value received");
-        sendAuthFailure(nas::EMmCause::UNSPECIFIED_PROTOCOL_ERROR);
-        return;
-    }
-
-    if ((m_usim->m_currentNsCtx && m_usim->m_currentNsCtx->ngKsi == msg.ngKSI.ksi) ||
-        (m_usim->m_nonCurrentNsCtx && m_usim->m_nonCurrentNsCtx->ngKsi == msg.ngKSI.ksi))
-    {
-        if (networkFailingTheAuthCheck(true))
-            return;
-
-        m_timers->t3520.start();
-        sendAuthFailure(nas::EMmCause::NGKSI_ALREADY_IN_USE);
-        return;
-    }
-
-    // =================================== Check the received AUTN ===================================
-
-    auto autnCheck = validateAutn(receivedRand, receivedAutn);
-    m_timers->t3516.start();
-
-    if (autnCheck == EAutnValidationRes::OK)
-    {
-        // Calculate milenage
-        auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), receivedRand, false);
-        auto sqnXorAk = OctetString::Xor(m_usim->m_sqnMng->getSqn(), milenage.ak);
-        auto ckPrimeIkPrime = keys::CalculateCkPrimeIkPrime(milenage.ck, milenage.ik, snn, sqnXorAk);
-        auto &ckPrime = ckPrimeIkPrime.first;
-        auto &ikPrime = ckPrimeIkPrime.second;
-
-        auto mk = keys::CalculateMk(ckPrime, ikPrime, m_base->config->supi.value());
-        auto kaut = mk.subCopy(16, 32);
-
-        // Check the received AT_MAC
-        auto expectedMac = keys::CalculateMacForEapAkaPrime(kaut, receivedEap);
-        if (expectedMac != receivedMac)
+        auto &receivedEap = (const eap::EapAkaPrime &)*msg.eapMessage->eap;
+        if (receivedEap.subType != eap::ESubType::AKA_CHALLENGE)
         {
-            m_logger->err("AT_MAC failure in EAP AKA'. expected: %s received: %s", expectedMac.toHexString().c_str(),
-                          receivedMac.toHexString().c_str());
+            sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
+            return;
+        }
+
+        // ================================ Check the received parameters syntactically ================================
+
+        auto receivedRand = receivedEap.attributes.getRand();
+        auto receivedMac = receivedEap.attributes.getMac();
+        auto receivedAutn = receivedEap.attributes.getAutn();
+
+        if (receivedRand.length() != 16 || receivedAutn.length() != 16 || receivedMac.length() != 16)
+        {
+            sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
+            return;
+        }
+
+        // =================================== Check the received KDF and KDF_INPUT ===================================
+
+        if (receivedEap.attributes.getKdf() != 1)
+        {
+            m_logger->err("EAP AKA' Authentication Reject, received AT_KDF is not valid");
+            if (networkFailingTheAuthCheck(true))
+                return;
+            m_timers->t3520.start();
+            sendEapFailure(std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
+                                                              eap::ESubType::AKA_AUTHENTICATION_REJECT));
+            return;
+        }
+
+        auto snn = keys::ConstructServingNetworkName(currentPlmn);
+
+        if (receivedEap.attributes.getKdfInput() != OctetString::FromAscii(snn))
+        {
+            m_logger->err("EAP AKA' Authentication Reject, received AT_KDF_INPUT is not valid");
+
+            sendEapFailure(std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
+                                                              eap::ESubType::AKA_AUTHENTICATION_REJECT));
+            return;
+        }
+
+        // =================================== Check the received ngKSI ===================================
+
+        if (msg.ngKSI.tsc == nas::ETypeOfSecurityContext::MAPPED_SECURITY_CONTEXT)
+        {
+            m_logger->err("Mapped security context not supported");
+            sendAuthFailure(nas::EMmCause::UNSPECIFIED_PROTOCOL_ERROR);
+            return;
+        }
+
+        if (msg.ngKSI.ksi == nas::IENasKeySetIdentifier::NOT_AVAILABLE_OR_RESERVED)
+        {
+            m_logger->err("Invalid ngKSI value received");
+            sendAuthFailure(nas::EMmCause::UNSPECIFIED_PROTOCOL_ERROR);
+            return;
+        }
+
+        if ((m_usim->m_currentNsCtx && m_usim->m_currentNsCtx->ngKsi == msg.ngKSI.ksi) ||
+            (m_usim->m_nonCurrentNsCtx && m_usim->m_nonCurrentNsCtx->ngKsi == msg.ngKSI.ksi))
+        {
+            if (networkFailingTheAuthCheck(true))
+                return;
+
+            m_timers->t3520.start();
+            sendAuthFailure(nas::EMmCause::NGKSI_ALREADY_IN_USE);
+            return;
+        }
+
+        // =================================== Check the received AUTN ===================================
+
+        auto autnCheck = validateAutn(receivedRand, receivedAutn);
+        m_timers->t3516.start();
+
+        if (autnCheck == EAutnValidationRes::OK)
+        {
+            // Calculate milenage
+            auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), receivedRand, false);
+            auto sqnXorAk = OctetString::Xor(m_usim->m_sqnMng->getSqn(), milenage.ak);
+            auto ckPrimeIkPrime = keys::CalculateCkPrimeIkPrime(milenage.ck, milenage.ik, snn, sqnXorAk);
+            auto &ckPrime = ckPrimeIkPrime.first;
+            auto &ikPrime = ckPrimeIkPrime.second;
+
+            auto mk = keys::CalculateMk(ckPrime, ikPrime, m_base->config->supi.value());
+            auto kaut = mk.subCopy(16, 32);
+
+            // Check the received AT_MAC
+            auto expectedMac = keys::CalculateMacForEapAkaPrime(kaut, receivedEap);
+            if (expectedMac != receivedMac)
+            {
+                m_logger->err("AT_MAC failure in EAP AKA'. expected: %s received: %s",
+                              expectedMac.toHexString().c_str(), receivedMac.toHexString().c_str());
+                if (networkFailingTheAuthCheck(true))
+                    return;
+                m_timers->t3520.start();
+
+                auto eap = std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
+                                                              eap::ESubType::AKA_CLIENT_ERROR);
+                eap->attributes.putClientErrorCode(0);
+                sendEapFailure(std::move(eap));
+                return;
+            }
+
+            // Store the relevant parameters
+            m_usim->m_rand = receivedRand.copy();
+            m_usim->m_resStar = {};
+
+            // Create new partial native NAS security context and continue with key derivation
+            m_usim->m_nonCurrentNsCtx = std::make_unique<NasSecurityContext>();
+            m_usim->m_nonCurrentNsCtx->tsc = msg.ngKSI.tsc;
+            m_usim->m_nonCurrentNsCtx->ngKsi = msg.ngKSI.ksi;
+            m_usim->m_nonCurrentNsCtx->keys.kAusf = keys::CalculateKAusfForEapAkaPrime(mk);
+            m_usim->m_nonCurrentNsCtx->keys.abba = msg.abba.rawData.copy();
+
+            keys::DeriveKeysSeafAmf(*m_base->config, currentPlmn, *m_usim->m_nonCurrentNsCtx);
+
+            // Send response
+            m_nwConsecutiveAuthFailure = 0;
+            m_timers->t3520.stop();
+            {
+                auto *akaPrimeResponse =
+                    new eap::EapAkaPrime(eap::ECode::RESPONSE, receivedEap.id, eap::ESubType::AKA_CHALLENGE);
+                akaPrimeResponse->attributes.putRes(milenage.res);
+                akaPrimeResponse->attributes.putMac(OctetString::FromSpare(16)); // Dummy mac
+                akaPrimeResponse->attributes.putKdf(1);
+
+                // Calculate and put mac value
+                auto sendingMac = keys::CalculateMacForEapAkaPrime(kaut, *akaPrimeResponse);
+                akaPrimeResponse->attributes.replaceMac(sendingMac);
+
+                nas::AuthenticationResponse resp;
+                resp.eapMessage = nas::IEEapMessage{};
+                resp.eapMessage->eap = std::unique_ptr<eap::EapAkaPrime>(akaPrimeResponse);
+
+                sendNasMessage(resp);
+            }
+        }
+        else if (autnCheck == EAutnValidationRes::MAC_FAILURE)
+        {
+            if (networkFailingTheAuthCheck(true))
+                return;
+            m_timers->t3520.start();
+            sendEapFailure(std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
+                                                              eap::ESubType::AKA_AUTHENTICATION_REJECT));
+        }
+        else if (autnCheck == EAutnValidationRes::SYNCHRONISATION_FAILURE)
+        {
+            if (networkFailingTheAuthCheck(true))
+                return;
+
+            m_timers->t3520.start();
+
+            auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), receivedRand, true);
+            auto auts = keys::CalculateAuts(m_usim->m_sqnMng->getSqn(), milenage.ak_r, milenage.mac_s);
+
+            auto eap = std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
+                                                          eap::ESubType::AKA_SYNCHRONIZATION_FAILURE);
+            eap->attributes.putAuts(std::move(auts));
+            sendEapFailure(std::move(eap));
+        }
+        else // the other case, separation bit mismatched
+        {
             if (networkFailingTheAuthCheck(true))
                 return;
             m_timers->t3520.start();
@@ -184,76 +301,118 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
                                                           eap::ESubType::AKA_CLIENT_ERROR);
             eap->attributes.putClientErrorCode(0);
             sendEapFailure(std::move(eap));
+        }
+    }
+    else if (msg.eapMessage->eap->eapType == eap::EEapType::EAP_TLS)
+    {
+        auto &receivedEap = (const eap::EapTLS &)*msg.eapMessage->eap;
+        // =================================== Check the received ngKSI ===================================
+
+        if (msg.ngKSI.tsc == nas::ETypeOfSecurityContext::MAPPED_SECURITY_CONTEXT)
+        {
+            m_logger->err("Mapped security context not supported");
+            sendAuthFailure(nas::EMmCause::UNSPECIFIED_PROTOCOL_ERROR);
             return;
         }
 
-        // Store the relevant parameters
-        m_usim->m_rand = receivedRand.copy();
-        m_usim->m_resStar = {};
-
-        // Create new partial native NAS security context and continue with key derivation
-        m_usim->m_nonCurrentNsCtx = std::make_unique<NasSecurityContext>();
-        m_usim->m_nonCurrentNsCtx->tsc = msg.ngKSI.tsc;
-        m_usim->m_nonCurrentNsCtx->ngKsi = msg.ngKSI.ksi;
-        m_usim->m_nonCurrentNsCtx->keys.kAusf = keys::CalculateKAusfForEapAkaPrime(mk);
-        m_usim->m_nonCurrentNsCtx->keys.abba = msg.abba.rawData.copy();
-
-        keys::DeriveKeysSeafAmf(*m_base->config, currentPlmn, *m_usim->m_nonCurrentNsCtx);
-
-        // Send response
-        m_nwConsecutiveAuthFailure = 0;
-        m_timers->t3520.stop();
+        if (msg.ngKSI.ksi == nas::IENasKeySetIdentifier::NOT_AVAILABLE_OR_RESERVED)
         {
-            auto *akaPrimeResponse =
-                new eap::EapAkaPrime(eap::ECode::RESPONSE, receivedEap.id, eap::ESubType::AKA_CHALLENGE);
-            akaPrimeResponse->attributes.putRes(milenage.res);
-            akaPrimeResponse->attributes.putMac(OctetString::FromSpare(16)); // Dummy mac
-            akaPrimeResponse->attributes.putKdf(1);
+            m_logger->err("Invalid ngKSI value received");
+            sendAuthFailure(nas::EMmCause::UNSPECIFIED_PROTOCOL_ERROR);
+            return;
+        }
+        // Handshake checking
 
-            // Calculate and put mac value
-            auto sendingMac = keys::CalculateMacForEapAkaPrime(kaut, *akaPrimeResponse);
-            akaPrimeResponse->attributes.replaceMac(sendingMac);
+        auto checkHandshakeState = [](SSL *ssl, int ret) {
+            if (ret != 1)
+            {
+                int err = SSL_get_error(ssl, ret);
+                if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+                    return true;
+                return false;
+            }
+            return true;
+        };
+
+        if (m_tlsState == ETlsState::TLS_START)
+        {
+            if ((receivedEap.flag & 32) == 0)
+            {
+                sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
+                return;
+            }
+            m_ctx = SSL_CTX_new(TLS_client_method());
+            SSL_CTX_set_min_proto_version(m_ctx, TLS1_2_VERSION);
+            SSL_CTX_set_max_proto_version(m_ctx, TLS1_2_VERSION);
+            SSL_CTX_set_verify(m_ctx, SSL_VERIFY_PEER, NULL);
+            SSL_CTX_load_verify_file(m_ctx, m_base->config->caCertificate.c_str());
+            SSL_CTX_use_certificate_file(m_ctx, m_base->config->clientCertificate.c_str(), SSL_FILETYPE_PEM);
+
+            auto ui = makeMethod();
+            auto storeHandle = OSSL_STORE_open(m_base->config->clientPrivateKey.c_str(), ui,
+                                               (void *)(m_base->config->clientPassword.c_str()), nullptr, nullptr);
+            auto storeInfo = OSSL_STORE_load(storeHandle);
+            m_pkey = OSSL_STORE_INFO_get1_PKEY(storeInfo);
+            SSL_CTX_use_PrivateKey(m_ctx, m_pkey);
+            OSSL_STORE_INFO_free(storeInfo);
+            OSSL_STORE_close(storeHandle);
+            UI_destroy_method(ui);
+            m_ssl = SSL_new(m_ctx);
+            m_rbio = BIO_new(BIO_s_mem());
+            m_wbio = BIO_new(BIO_s_mem());
+            SSL_set_bio(m_ssl, m_rbio, m_wbio);
+            SSL_set_connect_state(m_ssl);
+            m_tlsState = ETlsState::TLS_HANDSHAKE;
+        }
+        BIO_write(m_rbio, receivedEap.tlsData.data(), receivedEap.tlsData.length());
+        // TODO
+        if (m_tlsState == ETlsState::TLS_HANDSHAKE)
+        {
+            int state = SSL_do_handshake(m_ssl);
+            if (state == 1)
+            {
+                m_tlsState = ETlsState::TLS_DONE;
+                nas::AuthenticationResponse resp;
+                resp.eapMessage = nas::IEEapMessage{};
+                resp.eapMessage->eap =
+                    std::make_unique<eap::EapTLS>(eap::ECode::RESPONSE, receivedEap.id, 128, OctetString::Empty());
+                sendNasMessage(resp);
+                return;
+            }
+            if (!checkHandshakeState(m_ssl, state))
+            {
+                sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
+                return;
+            }
+            char *data = nullptr;
+            long dataSize = BIO_get_mem_data(m_wbio, &data);
+            auto tlsResponse = std::make_unique<eap::EapTLS>(eap::ECode::RESPONSE, receivedEap.id, 128,
+                                                             OctetString::FromArray((uint8_t *)data, dataSize));
 
             nas::AuthenticationResponse resp;
             resp.eapMessage = nas::IEEapMessage{};
-            resp.eapMessage->eap = std::unique_ptr<eap::EapAkaPrime>(akaPrimeResponse);
-
+            resp.eapMessage->eap = std::move(tlsResponse);
             sendNasMessage(resp);
+            return;
+        }
+        if (m_tlsState == ETlsState::TLS_DONE)
+        {
+            EVP_PKEY_free(m_pkey);
+            m_pkey = nullptr;
+            BIO_free(m_wbio);
+            BIO_free(m_rbio);
+            m_wbio = m_rbio = nullptr;
+            SSL_free(m_ssl);
+            m_ssl = nullptr;
+            SSL_CTX_free(m_ctx);
+            m_ctx = nullptr;
+            return;
         }
     }
-    else if (autnCheck == EAutnValidationRes::MAC_FAILURE)
+    else
     {
-        if (networkFailingTheAuthCheck(true))
-            return;
-        m_timers->t3520.start();
-        sendEapFailure(std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
-                                                          eap::ESubType::AKA_AUTHENTICATION_REJECT));
-    }
-    else if (autnCheck == EAutnValidationRes::SYNCHRONISATION_FAILURE)
-    {
-        if (networkFailingTheAuthCheck(true))
-            return;
-
-        m_timers->t3520.start();
-
-        auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), receivedRand, true);
-        auto auts = keys::CalculateAuts(m_usim->m_sqnMng->getSqn(), milenage.ak_r, milenage.mac_s);
-
-        auto eap = std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id,
-                                                      eap::ESubType::AKA_SYNCHRONIZATION_FAILURE);
-        eap->attributes.putAuts(std::move(auts));
-        sendEapFailure(std::move(eap));
-    }
-    else // the other case, separation bit mismatched
-    {
-        if (networkFailingTheAuthCheck(true))
-            return;
-        m_timers->t3520.start();
-
-        auto eap =
-            std::make_unique<eap::EapAkaPrime>(eap::ECode::RESPONSE, receivedEap.id, eap::ESubType::AKA_CLIENT_ERROR);
-        eap->attributes.putClientErrorCode(0);
-        sendEapFailure(std::move(eap));
+        sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
+        return;
     }
 }
 
@@ -503,7 +662,7 @@ EAutnValidationRes NasMm::validateAutn(const OctetString &rand, const OctetStrin
         return EAutnValidationRes::MAC_FAILURE;
     }
 
-    if(!sqn_ok)
+    if (!sqn_ok)
         return EAutnValidationRes::SYNCHRONISATION_FAILURE;
 
     return EAutnValidationRes::OK;

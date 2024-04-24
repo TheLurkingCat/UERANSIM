@@ -154,14 +154,22 @@ static nr::ue::UeConfig *ReadConfigYaml()
         result->protectionScheme = yaml::GetInt32(config, "protectionScheme", 0, 255);
     if (yaml::HasField(config, "homeNetworkPublicKeyId"))
         result->homeNetworkPublicKeyId = yaml::GetInt32(config, "homeNetworkPublicKeyId", 0, 255);
-    if (yaml::HasField(config, "homeNetworkPublicKey"))        
-        result->homeNetworkPublicKey = OctetString::FromHex(yaml::GetString(config, "homeNetworkPublicKey", 64, 64)); 
+    if (yaml::HasField(config, "homeNetworkPublicKey"))
+        result->homeNetworkPublicKey = OctetString::FromHex(yaml::GetString(config, "homeNetworkPublicKey", 64, 64));
     if (yaml::HasField(config, "imei"))
         result->imei = yaml::GetString(config, "imei", 15, 15);
     if (yaml::HasField(config, "imeiSv"))
         result->imeiSv = yaml::GetString(config, "imeiSv", 16, 16);
     if (yaml::HasField(config, "tunName"))
         result->tunName = yaml::GetString(config, "tunName", 1, 12);
+    if (yaml::HasField(config, "caCertificate"))
+        result->caCertificate = yaml::GetString(config, "caCertificate", 0, 64);
+    if (yaml::HasField(config, "clientCertificate"))
+        result->clientCertificate = yaml::GetString(config, "clientCertificate", 0, 64);
+    if (yaml::HasField(config, "clientPrivateKey"))
+        result->clientPrivateKey = yaml::GetString(config, "clientPrivateKey", 0, 64);
+    if (yaml::HasField(config, "clientPassword"))
+        result->clientPassword = yaml::GetString(config, "clientPassword", 0, 64);
 
     yaml::AssertHasField(config, "integrity");
     yaml::AssertHasField(config, "ciphering");

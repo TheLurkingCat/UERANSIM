@@ -178,6 +178,15 @@ class EapAkaPrime : public Eap
     EapAkaPrime(ECode code, octet id, ESubType subType);
 };
 
+class EapTLS : public Eap
+{
+  public:
+    uint16_t flag;
+    OctetString tlsData{};
+
+    EapTLS(ECode code, octet id, uint16_t flag, OctetString &&data);
+};
+
 class EapIdentity : public Eap
 {
   public:

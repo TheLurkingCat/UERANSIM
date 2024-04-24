@@ -3,5 +3,8 @@ file(GLOB_RECURSE SRC_FILES *.cpp)
 
 add_library(ue ${HDR_FILES} ${SRC_FILES})
 
+find_package(OpenSSL 3 REQUIRED)
+target_link_libraries(ue OpenSSL::SSL)
+
 target_compile_options(ue PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
 target_link_libraries(ue common-lib)

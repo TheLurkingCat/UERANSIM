@@ -129,6 +129,11 @@ eap::EapAkaPrime::EapAkaPrime(eap::ECode code, octet id, eap::ESubType subType)
 {
 }
 
+eap::EapTLS::EapTLS(eap::ECode code, octet id, uint16_t flag, OctetString &&tlsData)
+    : Eap(code, id, EEapType::EAP_TLS), flag(flag), tlsData(std::move(tlsData))
+{
+}
+
 eap::EapIdentity::EapIdentity(eap::ECode code, octet id) : Eap(code, id, EEapType::IDENTITY), rawData{}
 {
 }
@@ -174,6 +179,13 @@ void eap::EncodeEapPdu(OctetString &stream, const eap::Eap &pdu)
                 stream.appendOctet((value.length() + 2) / 4);
                 stream.append(value);
             });
+        }
+        else if (pdu.eapType == EEapType::EAP_TLS)
+        {
+            auto &tls = (const EapTLS &)pdu;
+            stream.appendOctet2(128);
+            stream.appendOctet4(tls.tlsData.length());
+            stream.append(tls.tlsData);
         }
         else if (pdu.eapType == EEapType::NOTIFICATION)
             stream.append(((const EapNotification &)pdu).rawData);
@@ -240,6 +252,14 @@ std::unique_ptr<eap::Eap> eap::DecodeEapPdu(const OctetView &stream)
         }
 
         return std::unique_ptr<Eap>(akaPrime);
+    }
+    else if (type == EEapType::EAP_TLS)
+    {
+        uint16_t flag = stream.read2US();
+        int tlsDataLength = stream.read4I();
+        auto tlsData = stream.readOctetString(tlsDataLength);
+
+        return std::unique_ptr<Eap>(new EapTLS(code, id, flag, std::move(tlsData)));
     }
     else if (type == EEapType::NOTIFICATION)
         return std::unique_ptr<Eap>(new EapNotification(code, id, stream.readOctetString(innerLength)));

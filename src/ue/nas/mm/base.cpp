@@ -58,6 +58,11 @@ NasMm::NasMm(TaskBase *base, NasTimers *timers) : m_base{base}, m_timers{timers}
 {
     m_logger = base->logBase->makeUniqueLogger(base->config->getLoggerPrefix() + "nas");
 
+    m_ctx = nullptr;
+    m_ssl = nullptr;
+    m_wbio = m_rbio = nullptr;
+    m_tlsState = ETlsState::TLS_START;
+
     m_rmState = ERmState::RM_DEREGISTERED;
     m_cmState = ECmState::CM_IDLE;
     m_mmState = EMmState::MM_DEREGISTERED;
@@ -77,6 +82,14 @@ void NasMm::onStart(NasSm *sm, Usim *usim)
 void NasMm::onQuit()
 {
     // TODO
+    if (m_rbio)
+        BIO_free(m_rbio);
+    if (m_wbio)
+        BIO_free(m_wbio);
+    if (m_ssl)
+        SSL_free(m_ssl);
+    if (m_ctx)
+        SSL_CTX_free(m_ctx);
 }
 
 void NasMm::triggerMmCycle()

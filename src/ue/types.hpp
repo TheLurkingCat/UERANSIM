@@ -111,6 +111,10 @@ struct UeConfig
     NetworkSlice defaultConfiguredNssai{};
     NetworkSlice configuredNssai{};
     std::optional<std::string> tunName{};
+    std::string caCertificate{};
+    std::string clientCertificate{};
+    std::string clientPrivateKey{};
+    std::string clientPassword{};
 
     struct
     {
@@ -250,6 +254,13 @@ enum class ERmState
 {
     RM_DEREGISTERED,
     RM_REGISTERED
+};
+
+enum class ETlsState
+{
+    TLS_START,
+    TLS_HANDSHAKE,
+    TLS_DONE
 };
 
 enum class ECmState

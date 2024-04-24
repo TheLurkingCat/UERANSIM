@@ -8,8 +8,13 @@
 
 #pragma once
 
+#include "ext/compact25519/compact_x25519.hpp"
+#include "ext/crypt-ext/aes.hpp"
+#include "ext/crypt-ext/hmac-sha256.h"
+#include "ext/crypt-ext/x963kdf.h"
 #include <lib/crypt/milenage.hpp>
 #include <lib/nas/nas.hpp>
+#include <openssl/ssl.h>
 #include <ue/nas/storage.hpp>
 #include <ue/nas/usim/usim.hpp>
 #include <ue/nts.hpp>
@@ -17,11 +22,6 @@
 #include <utils/nts.hpp>
 #include <utils/octet_string.hpp>
 #include <utils/random.hpp>
-#include "ext/compact25519/compact_x25519.hpp"
-#include "ext/crypt-ext/x963kdf.h"
-#include "ext/crypt-ext/aes.hpp"
-#include "ext/crypt-ext/hmac-sha256.h"
-
 
 namespace nr::ue
 {
@@ -31,6 +31,12 @@ class NasSm;
 class NasMm
 {
   private:
+    SSL_CTX *m_ctx;
+    SSL *m_ssl;
+    EVP_PKEY *m_pkey;
+    BIO *m_wbio, *m_rbio;
+    ETlsState m_tlsState;
+
     TaskBase *m_base;
     NasTimers *m_timers;
     std::unique_ptr<Logger> m_logger;
