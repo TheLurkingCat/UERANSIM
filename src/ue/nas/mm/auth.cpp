@@ -380,9 +380,9 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
                 resp.eapMessage->eap =
                     std::make_unique<eap::EapTLS>(eap::ECode::RESPONSE, receivedEap.id, 128, OctetString::Empty());
                 uint8_t keyMaterial[128];
-                constexpr char *label = "client EAP encryption";
-                SSL_export_keying_material(m_ssl, keyMaterial, sizeof(keyMaterial), label,
-                                           std::char_traits<char>::length(label), nullptr, 0, 0);
+                std::string label("client EAP encryption");
+                SSL_export_keying_material(m_ssl, keyMaterial, sizeof(keyMaterial), label.c_str(), label.length(),
+                                           nullptr, 0, 0);
 
                 m_usim->m_nonCurrentNsCtx = std::make_unique<NasSecurityContext>();
                 m_usim->m_nonCurrentNsCtx->tsc = msg.ngKSI.tsc;
