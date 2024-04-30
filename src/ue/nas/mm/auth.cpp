@@ -364,18 +364,33 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
             SSL_set_connect_state(m_ssl);
             m_tlsState = ETlsState::TLS_HANDSHAKE;
         }
+        BIO_reset(m_rbio);
         BIO_write(m_rbio, receivedEap.tlsData.data(), receivedEap.tlsData.length());
         // TODO
         if (m_tlsState == ETlsState::TLS_HANDSHAKE)
         {
+            BIO_reset(m_wbio);
             int state = SSL_do_handshake(m_ssl);
             if (state == 1)
             {
+                m_timers->t3520.stop();
                 m_tlsState = ETlsState::TLS_DONE;
                 nas::AuthenticationResponse resp;
                 resp.eapMessage = nas::IEEapMessage{};
                 resp.eapMessage->eap =
                     std::make_unique<eap::EapTLS>(eap::ECode::RESPONSE, receivedEap.id, 128, OctetString::Empty());
+                uint8_t keyMaterial[128];
+                constexpr char *label = "client EAP encryption";
+                SSL_export_keying_material(m_ssl, keyMaterial, sizeof(keyMaterial), label,
+                                           std::char_traits<char>::length(label), nullptr, 0, 0);
+
+                m_usim->m_nonCurrentNsCtx = std::make_unique<NasSecurityContext>();
+                m_usim->m_nonCurrentNsCtx->tsc = msg.ngKSI.tsc;
+                m_usim->m_nonCurrentNsCtx->ngKsi = msg.ngKSI.ksi;
+                m_usim->m_nonCurrentNsCtx->keys.kAusf = OctetString::FromArray((uint8_t *)(keyMaterial + 64), 32);
+                m_usim->m_nonCurrentNsCtx->keys.abba = msg.abba.rawData.copy();
+
+                keys::DeriveKeysSeafAmf(*m_base->config, currentPlmn, *m_usim->m_nonCurrentNsCtx);
                 sendNasMessage(resp);
                 return;
             }
