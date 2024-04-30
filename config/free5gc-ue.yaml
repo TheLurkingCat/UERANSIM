@@ -1,5 +1,5 @@
 # IMSI number of the UE. IMSI = [MCC|MNC|MSISDN] (In total 15 digits)
-supi: 'imsi-208930000000001'
+supi: 'imsi-208930000000003'
 # Mobile Country Code value of HPLMN
 mcc: '208'
 # Mobile Network Code value of HPLMN (2 or 3 digits)
@@ -13,13 +13,13 @@ homeNetworkPublicKeyId: 1
 # Routing Indicator
 routingIndicator: '0000'
 # Home Network Certificate
-caCertificate: 'ca.pem'
+caCertificate: '/home/meow/Desktop/cert/ca.pem'
 # UE Certificate
-clientCertificate: 'ue.pem'
+clientCertificate: '/home/meow/Desktop/cert/ue.pem'
 # UE Private Key Store
-clientPrivateKey: '0x81000201'
+clientPrivateKey: '/home/meow/Desktop/cert/ue.key'
 # UE Private Key Password
-clientPassword: '123'
+clientPassword: ''
 
 # Permanent subscription key
 key: '8baf473f2f8fd09487cccbd7097c6862'
