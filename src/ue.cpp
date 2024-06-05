@@ -26,6 +26,9 @@
 #include <utils/yaml_utils.hpp>
 #include <yaml-cpp/yaml.h>
 
+#include <openssl/evp.h>
+#include <openssl/provider.h>
+
 static app::CliServer *g_cliServer = nullptr;
 static nr::ue::UeConfig *g_refConfig = nullptr;
 static ConcurrentMap<std::string, nr::ue::UserEquipment *> g_ueMap{};
@@ -168,8 +171,6 @@ static nr::ue::UeConfig *ReadConfigYaml()
         result->clientCertificate = yaml::GetString(config, "clientCertificate");
     if (yaml::HasField(config, "clientPrivateKey"))
         result->clientPrivateKey = yaml::GetString(config, "clientPrivateKey");
-    if (yaml::HasField(config, "clientPassword"))
-        result->clientPassword = yaml::GetString(config, "clientPassword");
 
     yaml::AssertHasField(config, "integrity");
     yaml::AssertHasField(config, "ciphering");
@@ -382,7 +383,6 @@ static nr::ue::UeConfig *GetConfigByUe(int ueIndex)
     c->caCertificate = g_refConfig->caCertificate;
     c->clientCertificate = g_refConfig->clientCertificate;
     c->clientPrivateKey = g_refConfig->clientPrivateKey;
-    c->clientPassword = g_refConfig->clientPassword;
 
     if (c->supi.has_value())
         IncrementNumber(c->supi->value, ueIndex);
@@ -542,6 +542,9 @@ int main(int argc, char **argv)
         g_ueMap.invokeForeach([](const auto &ue) { ue.second->start(); });
     }
 
+    OSSL_PROVIDER_load(nullptr, "rsig");
+    OSSL_PROVIDER_load(nullptr, "default");
+    EVP_set_default_properties(nullptr, "?provider=default");
     while (true)
         Loop();
 }

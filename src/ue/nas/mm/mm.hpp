@@ -31,7 +31,6 @@ class NasSm;
 class NasMm
 {
   private:
-    SSL_CTX *m_ctx;
     SSL *m_ssl;
     EVP_PKEY *m_pkey;
     BIO *m_wbio, *m_rbio;

@@ -9,59 +9,9 @@
 #include "mm.hpp"
 #include <openssl/ssl.h>
 #include <openssl/store.h>
-#include <openssl/ui.h>
 
 #include <lib/nas/utils.hpp>
 #include <ue/nas/keys.hpp>
-
-namespace
-{
-
-int uiReader(UI *ui, UI_STRING *uis)
-{
-    std::string *password;
-    switch (UI_get_string_type(uis))
-    {
-    case UIT_PROMPT:
-    case UIT_VERIFY:
-        password = reinterpret_cast<std::string *>(UI_get0_user_data(ui));
-        if (password && (UI_get_input_flags(uis) & UI_INPUT_FLAG_DEFAULT_PWD))
-        {
-            UI_set_result(ui, uis, password->c_str());
-            return 1;
-        }
-    default:
-        break;
-    }
-    return (UI_method_get_reader(UI_OpenSSL()))(ui, uis);
-}
-
-int uiWriter(UI *ui, UI_STRING *uis)
-{
-    switch (UI_get_string_type(uis))
-    {
-    case UIT_PROMPT:
-    case UIT_VERIFY:
-        if (UI_get0_user_data(ui) && (UI_get_input_flags(uis) & UI_INPUT_FLAG_DEFAULT_PWD))
-        {
-            return 1;
-        }
-    default:
-        break;
-    }
-    return (UI_method_get_writer(UI_OpenSSL()))(ui, uis);
-}
-
-UI_METHOD *makeMethod()
-{
-    UI_METHOD *method = UI_create_method("TPM User Interface");
-    UI_method_set_opener(method, UI_method_get_opener(UI_OpenSSL()));
-    UI_method_set_closer(method, UI_method_get_closer(UI_OpenSSL()));
-    UI_method_set_reader(method, uiReader);
-    UI_method_set_writer(method, uiWriter);
-    return method;
-}
-} // namespace
 
 namespace nr::ue
 {
@@ -323,10 +273,10 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
         }
         // Handshake checking
 
-        auto checkHandshakeState = [](SSL *ssl, int ret) {
+        auto checkHandshakeState = [this](int ret) {
             if (ret != 1)
             {
-                int err = SSL_get_error(ssl, ret);
+                int err = SSL_get_error(m_ssl, ret);
                 if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
                     return true;
                 return false;
@@ -341,23 +291,32 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
                 sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
                 return;
             }
-            m_ctx = SSL_CTX_new(TLS_client_method());
-            SSL_CTX_set_min_proto_version(m_ctx, TLS1_2_VERSION);
-            SSL_CTX_set_max_proto_version(m_ctx, TLS1_2_VERSION);
-            SSL_CTX_set_verify(m_ctx, SSL_VERIFY_PEER, NULL);
-            SSL_CTX_load_verify_file(m_ctx, m_base->config->caCertificate.c_str());
-            SSL_CTX_use_certificate_file(m_ctx, m_base->config->clientCertificate.c_str(), SSL_FILETYPE_PEM);
+            OSSL_PARAM params[4];
+            params[0] =
+                OSSL_PARAM_construct_utf8_string("cert-file", (char *)m_base->config->clientCertificate.c_str(), 0);
+            params[1] = OSSL_PARAM_construct_utf8_string("ca-file", (char *)m_base->config->caCertificate.c_str(), 0);
+            params[2] =
+                OSSL_PARAM_construct_utf8_string("key-file", (char *)m_base->config->clientPrivateKey.c_str(), 0);
+            params[3] = OSSL_PARAM_construct_end();
 
-            auto ui = makeMethod();
-            auto storeHandle = OSSL_STORE_open(m_base->config->clientPrivateKey.c_str(), ui,
-                                               (void *)(&m_base->config->clientPassword), nullptr, nullptr);
+            auto storeHandle = OSSL_STORE_open_ex("rsig:192.168.56.1:8887", nullptr, "provider=rsig", nullptr, nullptr,
+                                                  params, nullptr, nullptr);
             auto storeInfo = OSSL_STORE_load(storeHandle);
-            m_pkey = OSSL_STORE_INFO_get1_PKEY(storeInfo);
-            SSL_CTX_use_PrivateKey(m_ctx, m_pkey);
-            OSSL_STORE_INFO_free(storeInfo);
             OSSL_STORE_close(storeHandle);
-            UI_destroy_method(ui);
-            m_ssl = SSL_new(m_ctx);
+            m_pkey = OSSL_STORE_INFO_get1_PKEY(storeInfo);
+            OSSL_STORE_INFO_free(storeInfo);
+
+            SSL_CTX *sctx = SSL_CTX_new(TLS_client_method());
+            SSL_CTX_set_min_proto_version(sctx, TLS1_2_VERSION);
+            SSL_CTX_set_max_proto_version(sctx, TLS1_2_VERSION);
+            SSL_CTX_set_verify(sctx, SSL_VERIFY_PEER, NULL);
+            SSL_CTX_set_verify_depth(sctx, 2);
+            SSL_CTX_load_verify_file(sctx, m_base->config->caCertificate.c_str());
+            SSL_CTX_use_certificate_file(sctx, m_base->config->clientCertificate.c_str(), SSL_FILETYPE_PEM);
+            SSL_CTX_use_PrivateKey(sctx, m_pkey);
+
+            m_ssl = SSL_new(sctx);
+            SSL_CTX_free(sctx);
             m_rbio = BIO_new(BIO_s_mem());
             m_wbio = BIO_new(BIO_s_mem());
             SSL_set_bio(m_ssl, m_rbio, m_wbio);
@@ -381,6 +340,7 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
                     std::make_unique<eap::EapTLS>(eap::ECode::RESPONSE, receivedEap.id, 128, OctetString::Empty());
                 uint8_t keyMaterial[128];
                 std::string label("client EAP encryption");
+
                 SSL_export_keying_material(m_ssl, keyMaterial, sizeof(keyMaterial), label.c_str(), label.length(),
                                            nullptr, 0, 0);
 
@@ -394,7 +354,7 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
                 sendNasMessage(resp);
                 return;
             }
-            if (!checkHandshakeState(m_ssl, state))
+            if (!checkHandshakeState(state))
             {
                 sendMmStatus(nas::EMmCause::SEMANTICALLY_INCORRECT_MESSAGE);
                 return;
@@ -419,8 +379,6 @@ void NasMm::receiveAuthenticationRequestEap(const nas::AuthenticationRequest &ms
             m_wbio = m_rbio = nullptr;
             SSL_free(m_ssl);
             m_ssl = nullptr;
-            SSL_CTX_free(m_ctx);
-            m_ctx = nullptr;
             return;
         }
     }

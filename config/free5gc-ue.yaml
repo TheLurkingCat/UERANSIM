@@ -13,13 +13,11 @@ homeNetworkPublicKeyId: 1
 # Routing Indicator
 routingIndicator: '0000'
 # Home Network Certificate
-caCertificate: '/home/meow/Desktop/cert/ca.pem'
+caCertificate: '/home/meow/Desktop/cert/cacert.pem'
 # UE Certificate
-clientCertificate: '/home/meow/Desktop/cert/ue.pem'
+clientCertificate: '/home/meow/Desktop/cert/clientcert.pem'
 # UE Private Key Store
-clientPrivateKey: '/home/meow/Desktop/cert/ue.key'
-# UE Private Key Password
-clientPassword: ''
+clientPrivateKey: '/home/meow/Desktop/cert/clientkey.part'
 
 # Permanent subscription key
 key: '8baf473f2f8fd09487cccbd7097c6862'

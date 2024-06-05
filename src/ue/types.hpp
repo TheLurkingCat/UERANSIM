@@ -114,7 +114,6 @@ struct UeConfig
     std::string caCertificate{};
     std::string clientCertificate{};
     std::string clientPrivateKey{};
-    std::string clientPassword{};
 
     struct
     {
